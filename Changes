@@ -1,6 +1,11 @@
 Revision history for Perl extension PSID.pm.
 
-2.00 - Wed Feb 20 2002
+2.01 - Tue Sep 3 2002
+        Changed the MD5 calculation to include the CLOCK field if it's
+        set to NTSC. The old MD5 fingerprints can still be asked - see
+        POD for details.
+
+2.00 - Wed Apr 3 2002
         Added PSID v2NG support.
         Major interface changes - see POD for details.
 

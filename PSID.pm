@@ -7,7 +7,7 @@ use strict;
 use vars qw($VERSION);
 use FileHandle;
 
-$VERSION = "2.00";
+$VERSION = "2.01";
 
 # These are the recognized field names for a PSID file. They must appear in
 # the order they appear in the PSID file after the first 4 ASCII bytes "PSID".
@@ -702,7 +702,7 @@ sub getFieldNames {
 }
 
 sub getMD5 {
-    my ($self) = @_;
+    my ($self, $oldMD5) = @_;
 
     use Digest::MD5;
 
@@ -732,6 +732,12 @@ sub getMD5 {
             $speedFlag = 60;
         }
         $md5->add(pack("C",$speedFlag));
+    }
+
+    my $clock = $self->getClock();
+    
+    if (($clock == 2) and !$oldMD5) {
+        $md5->add(pack("C",$clock));
     }
 
     return ($md5->hexdigest);
@@ -1176,15 +1182,19 @@ is inside the I<flags> field. The fieldname I<FILENAME> is also B<not>
 returned here, since that is considered to be a descriptive parameter of the
 PSID file and is not part of the PSID v2NG specification.
 
-=item B<$OBJECT>->B<getMD5>()
+=item B<$OBJECT>->B<getMD5>([SCALAR])
 
 Returns a string containing a hexadecimal representation of the 128-bit MD5
 fingerprint calculated from the following PSID fields: I<data> (excluding the
 first 2 bytes if I<loadAddress> is 0), I<initAddress>, I<playAddress>,
-I<songs>, and the relevant bits of I<speed>. The MD5 fingerprint calculated
-this way is used, for example, to index into the songlength database, because
-it provides a way to uniquely identify SID tunes even if the textual credit
-fields of the PSID file were changed.
+I<songs>, the relevant bits of I<speed>, and the value of the I<clock> field
+if it's set to NTSC and SCALAR is zero or not defined. If SCALAR is a nonzero
+value, the MD5 fingerprint calculation completely ignores the I<clock> field,
+which provides backward compatibility with earlier MD5 fingerprints.
+
+The MD5 fingerprint calculated this way is used, for example, to index into
+the songlength database, because it provides a way to uniquely identify SID
+tunes even if the textual credit fields of the PSID file were changed.
 
 =item B<$OBJECT>->B<alwaysValidateWrite>([SCALAR])
 
@@ -1301,14 +1311,16 @@ Overload '=' so two objects can be assigned to each other?
 This library is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
 
-PSID Perl module - (C) 1999-2002 LaLa <LaLa@C64.org> (Thanks to Adam Lorentzon
-for showing me how to extract binary data from PSID files! :-)
+PSID Perl module - Copyright (C) 1999, 2002 LaLa <LaLa@C64.org>
 
-PSID MD5 calculation - (C) 2001 Michael Schwendt <sidplay@geocities.com>
+(Thanks to Adam Lorentzon for showing me how to extract binary data from PSID
+files! :-)
+
+PSID MD5 calculation - Copyright (C) 2001 Michael Schwendt <sidplay@geocities.com>
 
 =head1 VERSION
 
-Version v2.00, released to CPAN on February 20, 2002.
+Version v2.01, released to CPAN on September 3, 2002.
 
 First version created on June 11, 1999.
 
