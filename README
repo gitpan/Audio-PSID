@@ -1,0 +1,34 @@
+PSID.pm version 1.60
+====================
+
+This class is designed to handle PlaySID files (usually bearing a .sid
+extension), which are music player and data routines converted from the
+Commodore-64 computer with an additional informational header prepended. For
+further details about the exact file format, the description of all PSID
+fields and for about SID tunes in general, see the excellent SIDPLAY homepage
+at: http://www.geocities.com/SiliconValley/Lakes/5147/ (You can find
+literally thousands of SID tunes in the High Voltage SID Collection at:
+http://www.hvsc.c64.org)
+
+This class can handle both version 1 and version 2 PSID files. The class was
+designed primarily to make it easier to look at and change the PSID header
+fields, so many of the methods are geared towards that.
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make install
+   make test
+
+COPYRIGHT AND LICENCE
+
+The module is provided as is. If you find bugs in the PSID.pm module,
+please report them to me immediately.
+
+This module is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+LaLa (LaLa@C64.org)
