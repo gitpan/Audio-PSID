@@ -7,7 +7,7 @@ use strict;
 use vars qw($VERSION);
 use FileHandle;
 
-$VERSION = "2.01";
+$VERSION = "2.02";
 
 # These are the recognized field names for a PSID file. They must appear in
 # the order they appear in the PSID file after the first 4 ASCII bytes "PSID".
@@ -115,7 +115,7 @@ sub read {
     $size = read ($FH, $hdr, 8);
 
     if (!$size) {
-        confess("Error reading $filename");
+#        confess("Error reading $filename");
         $self->initialize();
         return undef;
     }
@@ -142,7 +142,7 @@ sub read {
     # If the header is not as big as indicated by the dataOffset,
     # we have a problem.
     if ($size != ($dataOffset-8)) {
-        confess("Error reading $filename - incorrect header");
+#        confess("Error reading $filename - incorrect header");
         $self->initialize();
         return undef;
     }
@@ -180,7 +180,7 @@ sub read {
 
     # We allow a 0 length data.
     if (!defined($size)) {
-        confess("Error reading $filename");
+#        confess("Error reading $filename");
         $self->initialize();
         return undef;
     }
@@ -736,7 +736,7 @@ sub getMD5 {
 
     my $clock = $self->getClock();
     
-    if (($clock == 2) and !$oldMD5) {
+    if (($self->{PSIDdata}{version} > 1) and ($clock == 2) and !$oldMD5) {
         $md5->add(pack("C",$clock));
     }
 
@@ -1320,7 +1320,7 @@ PSID MD5 calculation - Copyright (C) 2001 Michael Schwendt <sidplay@geocities.co
 
 =head1 VERSION
 
-Version v2.01, released to CPAN on September 3, 2002.
+Version v2.02, released to CPAN on September 5, 2002.
 
 First version created on June 11, 1999.
 
