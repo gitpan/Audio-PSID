@@ -7,13 +7,13 @@ use strict;
 use vars qw($VERSION);
 use FileHandle;
 
-$VERSION = "1.60";
+$VERSION = "2.00";
 
 # These are the recognized field names for a PSID file. They must appear in
 # the order they appear in the PSID file after the first 4 ASCII bytes "PSID".
 my (@PSIDfieldNames) = qw(version dataOffset loadAddress initAddress
                           playAddress songs startSong speed name author
-                          copyright flags reserved data);
+                          copyright flags startPage pageLength reserved data);
 
 # Additional data stored in the class that are not part of the PSID file
 # format are: FILESIZE, FILENAME, and the implicit REAL_LOAD_ADDRESS.
@@ -21,6 +21,12 @@ my (@PSIDfieldNames) = qw(version dataOffset loadAddress initAddress
 # PADDING is used to hold any extra bytes that may be between the standard
 # PSID header and the data (usually happens when dataOffset is more than
 # 0x007C).
+
+# Constants for individual fields inside 'flags'.
+my $MUSPLAYER_OFFSET = 0; # Bit 0.
+my $PLAYSID_OFFSET   = 1; # Bit 1.
+my $CLOCK_OFFSET     = 2; # Bits 2-3.
+my $SIDMODEL_OFFSET  = 4; # Bits 4-5.
 
 sub new {
     my ($type, $file) = @_;
@@ -47,7 +53,7 @@ sub initialize() {
     # Initial PSID data.
     $self->{PSIDdata} = {
         version => 2,
-        dataOffset => 0x7c,
+        dataOffset => 0x7C,
         loadAddress => 0,
         initAddress => 0,
         playAddress => 0,
@@ -58,13 +64,15 @@ sub initialize() {
         author => '<?>',
         copyright => '20?? <?>',
         flags => 0,
+        startPage => 0,
+        pageLength => 0,
         reserved => 0,
         data => '',
     };
 
     $self->{PADDING} = '';
 
-    $self->{FILESIZE} = 0x7c;
+    $self->{FILESIZE} = 0x7C;
     $self->{FILENAME} = '';
 }
 
@@ -84,7 +92,14 @@ sub read {
     # skip the following step.
 
     if (ref(\$filename) ne "GLOB") {
+
         $filename = $self->{FILENAME} if (!(defined $filename));
+
+        if (!$filename) {
+            confess("No filename was specified");
+            $self->initialize();
+            return undef;
+        }
 
         if (!($FH = new FileHandle ("< $filename"))) {
             confess("Error opening $filename");
@@ -137,16 +152,18 @@ sub read {
     $hdrlength = 2*5+4+32*3;
     (@hdr) = unpack ("nnnnnNa32a32a32", substr($hdr,0,$hdrlength));
 
-    if ($version == 2) {
+    if ($version > 1) {
         my @temphdr;
-        # PSID v2 has two more fields.
-        (@temphdr) = unpack ("nN", substr($hdr,$hdrlength,2+4));
+        # PSID v2NG has 4 more fields.
+        (@temphdr) = unpack ("nCCn", substr($hdr,$hdrlength,2+1+1+2));
         push (@hdr, @temphdr);
-        $hdrlength += 2+4;
+        $hdrlength += 2+1+1+2;
     }
     else {
         # PSID v1 doesn't have these fields.
         $self->{PSIDdata}{flags} = undef;
+        $self->{PSIDdata}{startPage} = undef;
+        $self->{PSIDdata}{pageLength} = undef;
         $self->{PSIDdata}{reserved} = undef;
     }
 
@@ -172,12 +189,12 @@ sub read {
 
     if (ref(\$filename) ne "GLOB") {
         $FH->close();
+        $self->{FILENAME} = $filename;
     }
 
     $self->{PSIDdata}{data} = $data;
 
     $self->{FILESIZE} = $totsize;
-    $self->{FILENAME} = $filename;
 
     return 1;
 }
@@ -194,7 +211,12 @@ sub write {
     # skip the following step.
 
     if (ref(\$filename) ne "GLOB") {
-        $filename = $self->{PSIDdata}{FILENAME} if (!(defined $filename));
+        $filename = $self->{FILENAME} if (!(defined $filename));
+
+        if (!$filename) {
+            confess("No filename was specified");
+            return undef;
+        }
 
         if (!($FH = new FileHandle ("> $filename"))) {
             confess("Couldn't write $filename");
@@ -218,9 +240,9 @@ sub write {
     $output = pack ("A4nnnnnnnNa32a32a32", @hdr);
     print $FH $output;
 
-    # PSID version 2 has two more fields.
-    if ($self->{PSIDdata}{version} == 2) {
-        $output = pack ("nN", ($self->{PSIDdata}{flags}, $self->{PSIDdata}{reserved}));
+    # PSID version 2NG has 4 more fields.
+    if ($self->{PSIDdata}{version} > 1) {
+        $output = pack ("nCCn", ($self->{PSIDdata}{flags}, $self->{PSIDdata}{startPage}, $self->{PSIDdata}{pageLength}, $self->{PSIDdata}{reserved}));
         print $FH $output;
     }
 
@@ -243,8 +265,6 @@ sub get {
     foreach $field (keys %{$self->{PSIDdata}}) {
         $PSIDhash{$field} = $self->{PSIDdata}{$field};
     }
-    $PSIDhash{FILESIZE} = $self->{FILESIZE};
-    $PSIDhash{FILENAME} = $self->{FILENAME};
 
     # Strip off trailing NULLs.
     $PSIDhash{name} =~ s/\x00*$//;
@@ -265,36 +285,147 @@ sub get {
         }
     }
 
-    # These special fields are handled separate from actual PSID data.
-    if ($fieldname eq "FILENAME") {
-        return $PSIDhash{FILENAME};
-    }
-
-    if ($fieldname eq "FILESIZE") {
-        return $PSIDhash{FILESIZE};
-    }
-
-    if ($fieldname eq "REAL_LOAD_ADDRESS") {
-        my $REAL_LOAD_ADDRESS;
-
-        # It's a read-only "implicit" field, so we just calculate it
-        # on the fly.
-        if ($self->{PSIDdata}{data} and $self->{PSIDdata}{loadAddress} == 0) {
-            $REAL_LOAD_ADDRESS = unpack("v", substr($self->{PSIDdata}{data}, 0, 2));
-        }
-        else {
-            $REAL_LOAD_ADDRESS = $self->{PSIDdata}{loadAddress};
-        }
-
-        return $REAL_LOAD_ADDRESS;
-    }
-
     if (!grep(/^$fieldname$/, @PSIDfieldNames)) {
         confess ("No such fieldname: $fieldname");
         return undef;
     }
 
     return $PSIDhash{$fieldname};
+}
+
+sub getFileName {
+    my ($self) = @_;
+
+    return $self->{FILENAME};
+}
+
+sub getFileSize {
+    my ($self) = @_;
+
+    return $self->{FILESIZE};
+}
+
+sub getRealLoadAddress {
+    my ($self) = @_;
+    my $REAL_LOAD_ADDRESS;
+
+    # It's a read-only "implicit" field, so we just calculate it
+    # on the fly.
+    if ($self->{PSIDdata}{data} and $self->{PSIDdata}{loadAddress} == 0) {
+        $REAL_LOAD_ADDRESS = unpack("v", substr($self->{PSIDdata}{data}, 0, 2));
+    }
+    else {
+        $REAL_LOAD_ADDRESS = $self->{PSIDdata}{loadAddress};
+    }
+
+    return $REAL_LOAD_ADDRESS;
+}
+
+sub getSpeed($) {
+    my ($self, $songnumber) = @_;
+
+    $songnumber = 1 if ((!defined($songnumber)) or ($songnumber < 1));
+
+    if ($songnumber > $self->{PSIDdata}{songs}) {
+        confess ("Song number '$songnumber' is invalid!");
+        return undef;
+    }
+
+    $songnumber = 32 if ($songnumber > 32);
+
+    return (($self->{PSIDdata}{speed} >> ($songnumber-1)) & 0x1);
+}
+
+sub getMUSPlayer {
+    my ($self) = @_;
+
+    return undef if (!defined($self->{PSIDdata}{flags}));
+
+    return (($self->{PSIDdata}{flags} >> $MUSPLAYER_OFFSET) & 0x1);
+}
+
+sub isMUSPlayerRequired {
+    my ($self) = @_;
+
+    return $self->getMUSPlayer();
+}
+
+sub getPlaySID {
+    my ($self) = @_;
+
+    return undef if (!defined($self->{PSIDdata}{flags}));
+
+    return (($self->{PSIDdata}{flags} >> $PLAYSID_OFFSET) & 0x1);
+}
+
+sub isPlaySIDSpecific {
+    my ($self) = @_;
+
+    return $self->getPlaySID();
+}
+
+sub getClock {
+    my ($self) = @_;
+
+    return undef if (!defined($self->{PSIDdata}{flags}));
+
+    return (($self->{PSIDdata}{flags} >> $CLOCK_OFFSET) & 0x3);
+}
+
+sub getClockByName {
+    my ($self) = @_;
+    my $clock;
+
+    return undef if (!defined($self->{PSIDdata}{flags}));
+
+    $clock = $self->getClock();
+
+    if ($clock == 0) {
+        $clock = 'UNKNOWN';
+    }
+    elsif ($clock == 1) {
+        $clock = 'PAL';
+    }
+    elsif ($clock == 2) {
+        $clock = 'NTSC';
+    }
+    elsif ($clock == 3) {
+        $clock = 'EITHER';
+    }
+
+    return $clock;
+}
+
+sub getSIDModel {
+    my ($self) = @_;
+
+    return undef if (!defined($self->{PSIDdata}{flags}));
+
+    return (($self->{PSIDdata}{flags} >> $SIDMODEL_OFFSET) & 0x3);
+}
+
+sub getSIDModelByName {
+    my ($self) = @_;
+    my $SIDModel;
+
+    return undef if (!defined($self->{PSIDdata}{flags}));
+
+    $SIDModel = $self->getSIDModel();
+
+    if ($SIDModel == 0) {
+        $SIDModel = 'UNKNOWN';
+    }
+    elsif ($SIDModel == 1) {
+        $SIDModel = '6581';
+    }
+    elsif ($SIDModel == 2) {
+        $SIDModel = '8580';
+    }
+    elsif ($SIDModel == 3) {
+        $SIDModel = 'EITHER';
+    }
+
+    return $SIDModel;
 }
 
 # Notice that you have to pass in a hash (field-value pairs)!
@@ -307,23 +438,6 @@ sub set(@) {
     my $offset;
 
     foreach $fieldname (keys %PSIDhash) {
-
-        # This is a special field handled separate from actual PSID data.
-        if ($fieldname eq "FILENAME") {
-            $self->{FILENAME} = $PSIDhash{$fieldname};
-            next;
-        }
-
-        # These are the fields that should not be modified by the user.
-        if ($fieldname eq "FILESIZE") {
-            confess ("Read-only field: $fieldname");
-            next;
-        }
-
-        if ($fieldname eq 'REAL_LOAD_ADDRESS') {
-            confess ("Read-only field: $fieldname");
-            next;
-        }
 
         if (!grep(/^$fieldname$/, @PSIDfieldNames)) {
             confess ("No such fieldname: $fieldname");
@@ -347,19 +461,21 @@ sub set(@) {
                 $self->{PSIDdata}{version} = 1;
                 $self->{PSIDdata}{dataOffset} = 0x76;
                 $self->{PSIDdata}{flags} = undef;
+                $self->{PSIDdata}{startPage} = undef;
+                $self->{PSIDdata}{pageLength} = undef;
                 $self->{PSIDdata}{reserved} = undef;
                 $self->{PADDING} = '';
                 next;
             }
             elsif ($version == 2) {
-                # In PSID v2 we allow dataOffset to be larger than 0x7C.
+                # In PSID v2NG we allow dataOffset to be larger than 0x7C.
 
-                if ($offset < 0x7c) {
-                    $self->{PSIDdata}{dataOffset} = 0x7c;
+                if ($offset < 0x7C) {
+                    $self->{PSIDdata}{dataOffset} = 0x7C;
                     $self->{PADDING} = '';
                 }
                 else {
-                    $paddinglength = $offset - 0x7c;
+                    $paddinglength = $offset - 0x7C;
 
                     if (length($self->{PADDING}) < $paddinglength) {
                         # Add as many zeroes as necessary.
@@ -374,18 +490,21 @@ sub set(@) {
                 }
                 $self->{PSIDdata}{flags} = 0 if (!$self->{PSIDdata}{flags});
                 $self->{PSIDdata}{reserved} = 0 if (!$self->{PSIDdata}{reserved});
+                $self->{PSIDdata}{startPage} = 0 if (!$self->{PSIDdata}{startPage});
+                $self->{PSIDdata}{pageLength} = 0 if (!$self->{PSIDdata}{pageLength});
                 $self->{PSIDdata}{version} = $version;
                 $self->{PSIDdata}{dataOffset} = $offset;
                 next;
             }
             else {
-                confess ("PSID version number $version is greater than 2 - ignored");
+                confess ("Invalid PSID version number '$version' - ignored");
                 next;
             }
         }
 
-        if (($self->{PSIDdata}{version} != 2) and
-            (($fieldname eq 'flags') or ($fieldname eq 'reserved'))) {
+        if (($self->{PSIDdata}{version} < 2) and
+            (($fieldname eq 'flags') or ($fieldname eq 'reserved') or
+             ($fieldname eq 'startPage') or ($fieldname eq 'pageLength'))) {
 
             confess ("Can't change '$fieldname' when PSID version is set to 1");
             next;
@@ -400,18 +519,189 @@ sub set(@) {
     return 1;
 }
 
-sub getFieldNames() {
+sub setFileName($) {
+    my ($self, $filename) = @_;
+
+    $self->{FILENAME} = $filename;
+}
+
+sub setSpeed($$) {
+    my ($self, $songnumber, $value) = @_;
+
+    if (!defined($songnumber)) {
+        confess ("No song number was specified!");
+        return undef;
+    }
+
+    if (!defined($value)) {
+        confess ("No speed value was specified!");
+        return undef;
+    }
+
+    if (($songnumber > $self->{PSIDdata}{songs}) or ($songnumber < 1)) {
+        confess ("Song number '$songnumber' is invalid!");
+        return undef;
+    }
+
+    if (($value ne 0) and ($value ne 1)) {
+        confess ("Specified value '$value' is invalid!");
+        return undef;
+    }
+
+    $songnumber = 32 if ($songnumber > 32);
+    $songnumber = 1 if ($songnumber < 1);
+
+    # First, clear the bit in question.
+    $self->{PSIDdata}{speed} &= ~(0x1 << ($songnumber-1));
+
+    # Then set it.
+    $self->{PSIDdata}{speed} |= ($value << ($songnumber-1));
+}
+
+sub setMUSPlayer($) {
+    my ($self, $MUSplayer) = @_;
+
+    if (!defined($self->{PSIDdata}{flags})) {
+        confess ("Cannot set this field when PSID version is 1!");
+        return undef;
+    }
+
+    if (($MUSplayer ne 0) and ($MUSplayer ne 1)) {
+        confess ("Specified value '$MUSplayer' is invalid!");
+        return undef;
+    }
+
+    # First, clear the bit in question.
+    $self->{PSIDdata}{flags} &= ~(0x1 << $MUSPLAYER_OFFSET);
+
+    # Then set it.
+    $self->{PSIDdata}{flags} |= ($MUSplayer << $MUSPLAYER_OFFSET);
+}
+
+sub setPlaySID($) {
+    my ($self, $PlaySID) = @_;
+
+    if (!defined($self->{PSIDdata}{flags})) {
+        confess ("Cannot set this field when PSID version is 1!");
+        return undef;
+    }
+
+    if (($PlaySID ne 0) and ($PlaySID ne 1)) {
+        confess ("Specified value '$PlaySID' is invalid!");
+        return undef;
+    }
+
+    # First, clear the bit in question.
+    $self->{PSIDdata}{flags} &= ~(0x1 << $PLAYSID_OFFSET);
+
+    # Then set it.
+    $self->{PSIDdata}{flags} |= ($PlaySID << $PLAYSID_OFFSET);
+}
+
+sub setClock($) {
+    my ($self, $clock) = @_;
+
+    if (!defined($self->{PSIDdata}{flags})) {
+        confess ("Cannot set this field when PSID version is 1!");
+        return undef;
+    }
+
+    if (($clock < 0) or ($clock > 3)) {
+        confess ("Specified value '$clock' is invalid!");
+        return undef;
+    }
+
+    # First, clear the bits in question.
+    $self->{PSIDdata}{flags} &= ~(0x3 << $CLOCK_OFFSET);
+
+    # Then set them.
+    $self->{PSIDdata}{flags} |= ($clock << $CLOCK_OFFSET);
+}
+
+sub setClockByName($) {
+    my ($self, $clock) = @_;
+
+    if (!defined($self->{PSIDdata}{flags})) {
+        confess ("Cannot set this field when PSID version is 1!");
+        return undef;
+    }
+
+    if ($clock =~ /^(unknown|none|neither)$/i) {
+        $clock = 0;
+    }
+    elsif ($clock =~ /^PAL$/i) {
+        $clock = 1;
+    }
+    elsif ($clock =~ /^NTSC$/i) {
+        $clock = 2;
+    }
+    elsif ($clock =~ /^(any|both|either)$/i) {
+        $clock = 3;
+    }
+    else {
+        confess ("Specified value '$clock' is invalid!");
+        return undef;
+    }
+
+    $self->setClock($clock);
+}
+
+sub setSIDModel($) {
+    my ($self, $SIDModel) = @_;
+
+    if (!defined($self->{PSIDdata}{flags})) {
+        confess ("Cannot set this field when PSID version is 1!");
+        return undef;
+    }
+
+    if (($SIDModel < 0) or ($SIDModel > 3)) {
+        confess ("Specified value '$SIDModel' is invalid!");
+        return undef;
+    }
+
+    # First, clear the bits in question.
+    $self->{PSIDdata}{flags} &= ~(0x3 << $SIDMODEL_OFFSET);
+
+    # Then set them.
+    $self->{PSIDdata}{flags} |= ($SIDModel << $SIDMODEL_OFFSET);
+}
+
+sub setSIDModelByName($) {
+    my ($self, $SIDModel) = @_;
+
+    if (!defined($self->{PSIDdata}{flags})) {
+        confess ("Cannot set this field when PSID version is 1!");
+        return undef;
+    }
+
+    if ($SIDModel =~ /^(unknown|none|neither)$/i) {
+        $SIDModel = 0;
+    }
+    elsif (($SIDModel =~ /^6581$/) or ($SIDModel == 6581)) {
+        $SIDModel = 1;
+    }
+    elsif (($SIDModel =~ /^8580$/i) or ($SIDModel == 8580)) {
+        $SIDModel = 2;
+    }
+    elsif ($SIDModel =~ /^(any|both|either)$/i) {
+        $SIDModel = 3;
+    }
+    else {
+        confess ("Specified value '$SIDModel' is invalid!");
+        return undef;
+    }
+
+    $self->setSIDModel($SIDModel);
+}
+
+sub getFieldNames {
     my ($self) = @_;
     my (@PSIDfields) = @PSIDfieldNames;
-
-    push (@PSIDfields, "FILENAME");
-    push (@PSIDfields, "FILESIZE");
-    push (@PSIDfields, "REAL_LOAD_ADDRESS");
 
     return (@PSIDfields);
 }
 
-sub getMD5() {
+sub getMD5 {
     my ($self) = @_;
 
     use Digest::MD5;
@@ -453,23 +743,24 @@ sub alwaysValidateWrite($) {
     $self->{validateWrite} = $setting;
 }
 
-sub validate() {
+sub validate {
     my ($self) = @_;
     my $field;
+    my $MUSPlayer;
+    my $PlaySID;
+    my $clock;
+    my $SIDModel;
 
     # Change to version v2.
-    if ($self->{PSIDdata}{version} != 2) {
+    if ($self->{PSIDdata}{version} < 2) {
 #        carp ("Changing PSID to v2");
         $self->{PSIDdata}{version} = 2;
     }
 
-    if ($self->{PSIDdata}{dataOffset} != 0x7c) {
-        $self->{PSIDdata}{dataOffset} = 0x7c;
+    if ($self->{PSIDdata}{dataOffset} != 0x7C) {
+        $self->{PSIDdata}{dataOffset} = 0x7C;
 #        carp ("'dataOffset' was not 0x007C - set to 0x007C");
     }
-
-    $self->{PSIDdata}{flags} = 0 if (!$self->{PSIDdata}{flags});
-    $self->{PSIDdata}{reserved} = 0;
 
     # Sanity check the fields.
 
@@ -515,6 +806,14 @@ sub validate() {
         }
     }
 
+    # These fields should better be in the 0x00-0xFF range!
+    foreach $field (qw(startPage pageLength)) {
+        if (($self->{PSIDdata}{$field} < 0) or ($self->{PSIDdata}{$field} > 0xFF)) {
+#            confess ("'$field' value of $self->{PSIDdata}{$field} is out of range");
+            $self->{PSIDdata}{$field} = 0;
+        }
+    }
+
     # This field's max is 256.
     if ($self->{PSIDdata}{songs} > 256) {
         $self->{PSIDdata}{songs} = 256;
@@ -533,7 +832,7 @@ sub validate() {
 #        carp ("Invalid 'startSong' field - set to 1");
     }
 
-    # Only the relevant fields in speed will be set.
+    # Only the relevant fields in 'speed' will be set.
     my $tempSpeed = 0;
     my $maxSongs = $self->{PSIDdata}{songs};
 
@@ -546,6 +845,25 @@ sub validate() {
         $tempSpeed += ($self->{PSIDdata}{speed} & (1 << $i));
     }
     $self->{PSIDdata}{speed} = $tempSpeed;
+
+    # Only the relevant fields in 'flags' will be set.
+    $MUSPlayer = $self->isMUSPlayerRequired();
+    $PlaySID = $self->isPlaySIDSpecific();
+    $clock = $self->getClock();
+    $SIDModel = $self->getSIDModel();
+
+    $self->{PSIDdata}{flags} = 0;
+
+    $self->setMUSPlayer($MUSPlayer);
+    $self->setPlaySID($PlaySID);
+    $self->setClock($clock);
+    $self->setSIDModel($SIDModel);
+
+    if ($self->{PSIDdata}{startPage} == 0) {
+        $self->{PSIDdata}{pageLength} = 0;
+    }
+
+    $self->{PSIDdata}{reserved} = 0;
 
     # The preferred way is to have no padding between the v2 header and the
     # C64 data.
@@ -567,7 +885,7 @@ __END__
 
 =head1 NAME
 
-Audio::PSID - Perl class to handle PlaySID files (Commodore-64 music files), commonly known as SID files.
+Audio::PSID - Perl module to handle PlaySID files (Commodore-64 music files), commonly known as SID files.
 
 =head1 SYNOPSIS
 
@@ -591,22 +909,33 @@ Audio::PSID - Perl class to handle PlaySID files (Commodore-64 music files), com
 
 =head1 DESCRIPTION
 
-This class is designed to handle PlaySID files (usually bearing a .SID
+This module is designed to handle PlaySID files (usually bearing a .sid
 extension), which are music player and data routines converted from the
 Commodore-64 computer with an additional informational header prepended. For
-further details about the exact file format, the description of all PSID
-fields and for about SID tunes in general, see the excellent SIDPLAY homepage
-at: B<http://www.geocities.com/SiliconValley/Lakes/5147/> (You can find
-literally thousands of SID tunes in the High Voltage SID Collection at:
-B<http://www.hvsc.c64.org>)
+further details about the exact file format, see description of all PSID
+fields in the PSID_v2NG.txt file included in the module package. For
+information about SID tunes in general, see the excellent SIDPLAY homepage at:
 
-This class can handle both version 1 and version 2 PSID files. The class was
-designed primarily to make it easier to look at and change the PSID header
-fields, so many of the methods are geared towards that. Use the
-I<getFieldNames> method to find out the exact names of the fields currently
-recognized by this class. Please note that B<fieldnames are case-sensitive>!
+B<http://www.geocities.com/SiliconValley/Lakes/5147/>
 
-=head2 Methods
+For PSID v2NG documentation:
+
+B<http://sidplay2.sourceforge.net>
+
+You can find literally thousands of SID tunes in the High Voltage SID
+Collection at:
+
+B<http://www.hvsc.c64.org>
+
+This module can handle both version 1 and version 2/2NG PSID files. (Version 2
+files are simply v2NG files where v2NG specific fields are set 0.) The module
+was designed primarily to make it easier to look at and change the PSID header
+fields, so many of the member function are geared towards that. Use
+$OBJECT->I<getFieldNames>() to find out the exact names of the fields
+currently recognized by this module. Please note that B<fieldnames are
+case-sensitive>!
+
+=head2 Member functions
 
 =over 4
 
@@ -624,105 +953,228 @@ file as specified in $OBJECT->I<read>() below.
 Initializes the object with default PSID data as follows:
 
     version => 2,
-    dataOffset => 0x7c,
+    dataOffset => 0x7C,
     name => '<?>',
     author => '<?>',
     copyright => '20?? <?>',
     data => '',
 
-I<FILENAME> is set to '' and I<FILESIZE> is set to 0x7c. All other fields
-(I<loadAddress>, I<initAddress>, I<playAddress>, I<songs>, I<startSong>,
-I<speed>, I<flags> and I<reserved>) are set to 0. I<REAL_LOAD_ADDRESS> is a
-read-only field that is always calculated on-the-fly when its value is
-requested, so it's not stored in the object data per se.
+Every other PSID field (I<loadAddress>, I<initAddress>, I<playAddress>,
+I<songs>, I<startSong>, I<speed>, I<flags>, I<startPage>, I<pageLength> and
+I<reserved>) is set to 0. I<FILENAME> is set to '' and the filesize is set to
+0x7C.
 
 =item B<$OBJECT>->B<read>([SCALAR]) or B<$OBJECT>->B<read>([FILEHANDLE])
 
 Reads the PSID file given by the filename SCALAR or by FILEHANDLE and
-populates the stored fields with the values taken from this file. If the given
-file is a PSID version 1 file, the fields of I<flags> and I<reserved> are set
-to be undef.
+populates the fields with the values taken from this file. If the given file
+is a PSID version 1 file, the fields of I<flags>, I<startPage>, I<pageLength>
+and I<reserved> are set to undef.
 
-If neither SCALAR nor FILEHANDLE is specified, the value of the I<FILENAME>
-field is used to determine the name of the input file.
+If neither SCALAR nor FILEHANDLE is specified, the value of I<FILENAME> is
+used to determine the name of the input file. If that is not set, either, the
+module is initialized with default data and returns an undef. Note that SCALAR
+and FILEHANDLE here can be different than the value of I<FILENAME>! If SCALAR
+is defined, it will overwrite the filename stored in I<FILENAME>, otherwise it
+is not modified. So, watch out when passing in a FILEHANDLE, because
+I<FILENAME> will not be modified!
 
-If the file turns out to be an invalid PSID file, the class is initialized
-with default data only. Valid PSID files must have the ASCII string 'PSID' as
-their first 4 bytes, and either 0x0001 or 0x0002 as the next 2 bytes in
-big-endian format.
+If the file turns out to be an invalid PSID file, the module is initialized
+with default data and returns an undef. Valid PSID files must have the ASCII
+string 'PSID' as their first 4 bytes, and either 0x0001 or 0x0002 as the next
+2 bytes in big-endian format.
 
 =item B<$OBJECT>->B<write>([SCALAR]) or B<$OBJECT>->B<write>([FILEHANDLE])
 
 Writes the PSID file given by the filename SCALAR or by FILEHANDLE to disk. If
-neither SCALAR nor FILEHANDLE is specified, the value of the I<FILENAME> field
-is used to determine the name of the output file. Note that SCALAR and
-FILEHANDLE here can be different than the value of the I<FILENAME> field! If
-SCALAR or FILEHANDLE is defined, it will not overwrite the filename stored in
-the I<FILENAME> field.
+neither SCALAR nor FILEHANDLE is specified, the value of I<FILENAME> is used
+to determine the name of the output file. If that is not set, either, returns
+an undef. Note that SCALAR and FILEHANDLE here can be different than the value
+of I<FILENAME>! If SCALAR is defined, it will not overwrite the filename
+stored in I<FILENAME>.
 
-I<write> will create a version 1 or version 2 PSID file depending on the value
-of the I<version> field, regardless of whether the other fields are set
+I<write> will create a version 1 or version 2/2NG PSID file depending on the
+value of the I<version> field, regardless of whether the other fields are set
 correctly or not, or even whether they are undef'd or not. However, if
 $OBJECT->I<alwaysValidateWrite>(1) was called beforehand, I<write> will always
-write a valid version 2 PSID file. See below.
+write a validated v2NG PSID file. See below.
 
 =item B<$OBJECT>->B<get>([SCALAR])
 
-Retrieves the value of the field given by the name SCALAR, or returns an
-array (actually a hash) of all the recognized PSID fields with their values
-if called in an array/hash context.
+Retrieves the value of the PSID field given by the name SCALAR, or returns a
+hash of all the recognized PSID fields with their values if called in an
+array/hash context.
 
-If the field name given by SCALAR is unrecognized, the operation is ignored
+If the fieldname given by SCALAR is unrecognized, the operation is ignored
 and an undef is returned. If SCALAR is not specified and I<get> is not called
 from an array context, the same terrible thing will happen. So try not to do
 either of these.
 
-B<NOTE:> I<FILENAME>, I<FILESIZE> and I<REAL_LOAD_ADDRESS> are special fields
-that are not really part of a PSID file. I<FILENAME> is simply the name of the
-file read in (if changed, the $OBJECT->I<write>() will write all data out to
-the new filename). I<FILESIZE> is the the total size of all data that would be
-written by $OBJECT->I<write>() if it was called right now (i.e. if you read in
-a version 1 file and change it in-memory to version 2, I<FILESIZE> will
-reflect the size of how big the version 2 file would be). Finally,
-I<REAL_LOAD_ADDRESS> indicates what is the actual Commodore-64 memory location
-where the PSID data is going to be loaded into. If I<loadAddress> is non-zero,
-then I<REAL_LOAD_ADDRESS> = I<loadAddress>, otherwise it's the first two bytes
-of I<data> (read from there in little-endian format).
+=item B<$OBJECT>->B<getFileName>()
+
+Returns the current I<FILENAME> stored in the object.
+
+=item B<$OBJECT>->B<getFileSize>()
+
+Returns the total size of the PSID file that would be written by
+$OBJECT->I<write>() if it was called right now. This means that if you read in
+a version 1 file and changed the I<version> field to 2 without actually saving
+the file, the size returned here will reflect the size of how big the version
+2 file would be.
+
+=item B<$OBJECT>->B<getRealLoadAddress>()
+
+The "real load address" indicates what is the actual Commodore-64 memory
+location where the PSID data is going to be loaded into. If I<loadAddress> is
+non-zero, then I<loadAddress> is returned here, otherwise it's the first two
+bytes of I<data> (read from there in little-endian format).
+
+=item B<$OBJECT>->B<getSpeed>([SCALAR])
+
+Returns the speed of the song number specified by SCALAR. If no SCALAR is
+specified, returns the speed of song #1. Speed can be either 0 (indicating a
+vertical blank interrupt (50Hz PAL, 60Hz NTSC)), or 1 (indicating CIA 1 timer
+interrupt (default is 60Hz)).
+
+=item B<$OBJECT>->B<getMUSPlayer>()
+
+Returns the value of the 'MUSPlayer' bit of the I<flags> field if I<flags> is
+specified (i.e. when I<version> is 2), or undef otherwise. The returned value
+is either 0 (indicating a built-in music player) or 1 (indicating that I<data>
+is a Compute!'s Sidplayer MUS data and the music player must be merged).
+
+=item B<$OBJECT>->B<isMUSPlayerRequired>()
+
+This is an alias for $OBJECT->I<getMUSPlayer>().
+
+=item B<$OBJECT>->B<getPlaySID>()
+
+Returns the value of the 'psidSpecific' bit of the I<flags> field if I<flags>
+is specified (i.e. when I<version> is 2), or undef otherwise. The returned
+value is either 0 (indicating that I<data> is Commodore-64 compatible) or
+1 (indicating that I<data> is PlaySID specific).
+
+=item B<$OBJECT>->B<isPlaySIDSpecific>()
+
+This is an alias for $OBJECT->I<getPlaySID>().
+
+=item B<$OBJECT>->B<getClock>()
+
+Returns the value of the 'clock' (video standard) bits of the I<flags> field
+if I<flags> is specified (i.e. when I<version> is 2), or undef otherwise. The
+returned value is one of 0 (UNKNOWN), 1 (PAL), 2 (NTSC) or 3 (EITHER).
+
+=item B<$OBJECT>->B<getClockByName>()
+
+Returns the textual value of the 'clock' (video standard) bits of the I<flags>
+field if I<flags> is specified (i.e. when I<version> is 2), or undef
+otherwise. The textual value will be one of UNKNOWN, PAL, NTSC or EITHER.
+
+=item B<$OBJECT>->B<getSIDModel>()
+
+Returns the value of the 'sidModel' bits of the I<flags> field if I<flags> is
+specified (i.e. when I<version> is 2), or undef otherwise. The returned value
+is one of 0 (UNKNOWN), 1 (6581), 2 (8580) or 3 (EITHER).
+
+=item B<$OBJECT>->B<getSIDModelByName>()
+
+Returns the textual value of the 'sidModel' bits of the I<flags> field if
+I<flags> is specified (i.e. when I<version> is 2), or undef otherwise. The
+textual value will be one of UNKNOWN, 6581, 8580 or EITHER.
 
 =item B<$OBJECT>->B<set>(field => value [, field => value, ...] )
 
-Given one or more field-value pairs it sets the PSID fields given by I<field>
-to have I<value>. The read-only fields that cannot be set under any
-circumstance are I<FILESIZE> and I<REAL_LOAD_ADDRESS>, as these
-fields are set automatically or are implicit.
+Given one or more field-value pairs it changes the PSID fields given by
+I<field> to have I<value>.
 
 If you try to set a field that is unrecognized, that particular field-value
-pair will be ignored. The same happens if you try to change one of the above
-read-only fields. Trying to set the I<version> field to anything else than 1
-or 2 will result in criminal prosecution, expulsion, and possibly death...
-Actually, it won't harm you, but the invalid value will be ignored.
+pair will be ignored. Trying to set the I<version> field to anything other
+than 1 or 2 will result in criminal prosecution, expulsion, and possibly
+death... Actually, it won't harm you, but the invalid value will be ignored.
 
-Whenever the version number is set to 1, the I<flags> and I<reserved> fields
-are automatically set to be undef'd, and the I<dataOffset> field is reset to
-0x0076. If you try to set I<flags> or I<reserved> when I<version> is not 2,
-the values will be ignored. Trying to set I<dataOffset> when I<version> is 1
-will always be reset its value to 0x0076, and I<dataOffset> can't be set to
-lower than 0x007C if I<version> is 2. You can set it higher, though, in which
-case either the relevant portion of the original extra padding bytes between
-the PSID header and the I<data> will be preserved, or additional 0x00 bytes
-will be added between the PSID header and the I<data> if necessary.
+Whenever the version number is changed to 1, the I<flags>, I<startPage>,
+I<pageLength> and I<reserved> fields are automatically set to be undef'd, and
+the I<dataOffset> field is reset to 0x0076. Whenever the version number is
+changed to 2, the I<flags>, I<startPage>, I<pageLength> and I<reserved> fields
+are zeroed out.
 
-The I<FILESIZE> field is always recalculated, so you don't have to worry about
-that, even if you change I<dataOffset> or the I<data> portion.
+If you try to set I<flags>, I<startPage>, I<pageLength> or I<reserved> when
+I<version> is not 2, the values will be ignored. Trying to set I<dataOffset>
+when I<version> is 1 will always reset its value to 0x0076, and I<dataOffset>
+can't be set to lower than 0x007C if I<version> is 2. You can set it higher,
+though, in which case either the relevant portion of the original extra
+padding bytes between the PSID header and the I<data> will be preserved, or
+additional 0x00 bytes will be added between the PSID header and the I<data> if
+necessary.
+
+=item B<$OBJECT>->B<setFileName>([SCALAR])
+
+Sets the I<FILENAME> to SCALAR. This filename is used by $OBJECT->I<read>()
+and $OBJECT->I<write>() when either one of them is called without any
+arguments. SCALAR can specify either a relative or an absolute pathname to the
+file - in fact, it can be anything that can be passed to a B<FileHandle>
+type object as a filename.
+
+=item B<$OBJECT>->B<setSpeed>([SCALAR1], [SCALAR2])
+
+Changes the speed of the song number specified by SCALAR1 to that of SCALAR2.
+SCALAR1 has to be more than 1 and less than the value of the I<songs> field.
+SCALAR2 can be either 0 (indicating a vertical blank interrupt (50Hz PAL, 60Hz
+NTSC)), or 1 (indicating CIA 1 timer interrupt (default is 60Hz)). An undef is
+returned if neither was specified.
+
+=item B<$OBJECT>->B<setMUSPlayer>([SCALAR])
+
+Changes the value of the 'MUSPlayer' bit of the I<flags> field to SCALAR if
+I<flags> is specified (i.e. when I<version> is 2), returns an undef otherwise.
+SCALAR must be either 0 (indicating a built-in music player) or 1 (indicating
+that I<data> is a Compute!'s Sidplayer MUS data and the music player must be
+merged).
+
+=item B<$OBJECT>->B<setPlaySID>([SCALAR])
+
+Changes the value of the 'psidSpecific' bit of the I<flags> field to SCALAR if
+I<flags> is specified (i.e. when I<version> is 2), returns an undef otherwise.
+SCALAR must be either 0 (indicating that I<data> is Commodore-64 compatible)
+or 1 (indicating that I<data> is PlaySID specific).
+
+=item B<$OBJECT>->B<setClock>([SCALAR])
+
+Changes the value of the 'clock' (video standard) bits of the I<flags> field
+to SCALAR if I<flags> is specified (i.e. when I<version> is 2), returns an
+undef otherwise. SCALAR must be one of 0 (UNKNOWN), 1 (PAL), 2 (NTSC) or 3
+(EITHER).
+
+=item B<$OBJECT>->B<setClockByName>([SCALAR])
+
+Changes the value of the 'clock' (video standard) bits of the I<flags> field
+if I<flags> is specified (i.e. when I<version> is 2), returns an undef
+otherwise. SCALAR must be be one of UNKNOWN, NONE, NEITHER (all 3 indicating
+UNKNOWN), PAL, NTSC or ANY, BOTH, EITHER (all 3 indicating EITHER) and is
+case-insensitive.
+
+=item B<$OBJECT>->B<setSIDModel>([SCALAR])
+
+Changes the value of the 'sidModel' bits of the I<flags> field if I<flags> is
+specified (i.e. when I<version> is 2), returns an undef otherwise. SCALAR must
+be one of 0 (UNKNOWN), 1 (6581), 2 (8580) or 3 (EITHER).
+
+=item B<$OBJECT>->B<setSIDModelByName>([SCALAR])
+
+Changes the value of the 'sidModel' bits of the I<flags> field if I<flags> is
+specified (i.e. when I<version> is 2), returns an undef otherwise. SCALAR must
+be be one of UNKNOWN, NONE, NEITHER (all 3 indicating UNKNOWN), 6581, 8580 or
+ANY, BOTH, EITHER (all 3 indicating EITHER) and is case-insensitive.
 
 =item B<$OBJECT>->B<getFieldNames>()
 
-Returns an array that contains all the fieldnames recognized by this class,
+Returns an array that contains the PSID fieldnames recognized by this module,
 regardless of the PSID version number. All fieldnames are taken from the
-standard PSID file format, except I<FILESIZE>, I<FILENAME> and
-I<REAL_LOAD_ADDRESS>, which are not actually part of the PSID header, but
-are considered to be descriptive of any PSID file, and are provided merely for
-convenience.
+standard PSID v2NG file format specification, but do B<not> include those
+fields that are themselves contained in another field, namely any field that
+is inside the I<flags> field. The fieldname I<FILENAME> is also B<not>
+returned here, since that is considered to be a descriptive parameter of the
+PSID file and is not part of the PSID v2NG specification.
 
 =item B<$OBJECT>->B<getMD5>()
 
@@ -744,24 +1196,20 @@ this is also the default behavior.
 =item B<$OBJECT>->B<validate>()
 
 Regardless of how the PSID fields were populated, this operation will update
-the stored PSID data to comply with the latest PSID version (currently v2). It
-also changes the PSID version to v2 if it is not already that, and it will also
-change the fields so that they take on their prefered values. Operations done
-by this method include (but are not limited to):
+the stored PSID data to comply with the latest PSID version (v2NG). Thus, it
+changes the PSID I<version> to 2, and it will also change the other fields so
+that they take on their prefered values. Operations done by this member
+function include (but are not limited to):
 
 =over 4
 
 =item *
 
-bumping up the PSID version to v2,
+bumping up the PSID version to v2NG by setting I<version> to 2,
 
 =item *
 
 setting the I<dataOffset> to 0x007C,
-
-=item *
-
-setting the I<reserved> field to 0,
 
 =item *
 
@@ -785,6 +1233,15 @@ memory), and setting them to 0 if they aren't,
 
 =item *
 
+making sure that I<startPage> and I<pageLength> are within the 0x00-0xFF
+range, and setting them to 0 if they aren't,
+
+=item *
+
+setting the I<pageLength> to 0 if I<startPage> is 0.
+
+=item *
+
 making sure that I<songs> is within the range of [1,256], and changing it to
 1 if it less than that or to 256 if it is more than that,
 
@@ -796,7 +1253,12 @@ it to 1 if it is not,
 =item *
 
 setting only the relevant bits in I<speed>, regardless of how many bits were
-set before,
+set before, and setting the rest to 0,
+
+=item *
+
+setting only the recognized bits in I<flags>, namely 'MUSPlayer',
+'psidSpecific', 'clock' and 'sidModel' (bits 0-5), and setting the rest to 0,
 
 =item *
 
@@ -806,7 +1268,7 @@ of the PSID header, i.e. larger than 0x007C),
 
 =item *
 
-recalculating the I<FILESIZE> field.
+setting the I<reserved> field to 0,
 
 =back
 
@@ -825,68 +1287,8 @@ More or less in order of perceived priority, from most urgent to least urgent.
 
 =item *
 
-Maybe those fields not part of the PSID header should have their own getField()
-functions?
-
-=item *
-
-Need to think of a good way to extend the class so it can handle the songlength
-database and STIL info, too.
-
-=item *
-
-Extend the class to be able to handle all kinds of C64 music files (eg. MUS,
+Extend the module to be able to handle all kinds of C64 music files (eg. MUS,
 .INFO, old .SID and .DAT, etc.), not just PSID .SIDs.
-
-=item *
-
-Add support for PSID v2B (aka v2NG) redefined fields (proposal is still in
-a state of flux):
-
-- I<flags>:
-
-Bit 0 - specifies format of the binary data (0 = built-in music player,
-1 = Compute!'s Sidplayer MUS data, music player must be merged).
-
-Bit 1 - specifies video standard (0 = PAL, 1 = NTSC).
-
-Bits 2-3 - specify the SID version (00 = unknonw, 01 = MOS6581, 10 = MOS8580).
-
-Bit 4 - specifies use of PlaySID samples (0 = no PlaySID samples,
-1 = PlaySID samples).
-
-Bits 5-15 are reserved and should be set to 0.
-
-- I<speed> is redefined as:
-
-I<speed> is a 32 bit big endian number, starting at offset 0x12. Each bit in
-I<speed> specifies the speed for the corresponding tune number, i.e. bit 0
-specifies the speed for tune 1. If there are more than 32 tunes, the speed
-specified for tune 32 is also used for all higher numbered tunes.
-
-A 0 bit specifies vertical blank interrupt (50Hz PAL, 60Hz NTSC), and a 1 bit
-specifies CIA 1 timer interrupt default 60Hz).
-
-Surplus bits in I<speed> should be set to 0.
-
-Note that if I<playAddress> = 0, the bits in I<speed> should still be set for
-backwards compatibility with older SID players. New SID players running in a
-C64 environment will ignore the speed bits in this case.
-
-- I<reserved> is broken up and is redefined as follows:
-
-I<startpage> is an 8 bit number, starting at offset 0x78.
-
-I<pagelength> is an 8 bit number, starting at offset 0x79. If I<startpage> = 0,
-I<pagelength> should be set to 0, too.
-
-I<reserved> is a 16 bit big endian number, starting at offset 0x7a. It is
-reserved and should be set to 0.
-
-=item *
-
-Add a get() method to retrieve individual bits from I<speed>? (Input might be
-the song number.)
 
 =item *
 
@@ -899,27 +1301,30 @@ Overload '=' so two objects can be assigned to each other?
 This library is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
 
-PSID Perl module - (C) 1999-2001 LaLa <LaLa@C64.org> (Thanks to Adam Lorentzon
+PSID Perl module - (C) 1999-2002 LaLa <LaLa@C64.org> (Thanks to Adam Lorentzon
 for showing me how to extract binary data from PSID files! :-)
 
 PSID MD5 calculation - (C) 2001 Michael Schwendt <sidplay@geocities.com>
 
 =head1 VERSION
 
-Version v1.60, released to CPAN on January 6, 2002.
+Version v2.00, released to CPAN on February 20, 2002.
 
 First version created on June 11, 1999.
 
 =head1 SEE ALSO
 
 the SIDPLAY homepage for the PSID file format documentation:
+
 B<http://www.geocities.com/SiliconValley/Lakes/5147/>
 
 the SIDPLAY2 homepage for documents about the PSID v2NG extensions:
-B<http://sidplay2.sourceforge.net/>
+
+B<http://sidplay2.sourceforge.net>
 
 the High Voltage SID Collection, the most comprehensive archive of SID tunes
 for SID files:
+
 B<http://www.hvsc.c64.org>
 
 L<Digest::MD5>

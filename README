@@ -1,17 +1,27 @@
-PSID.pm version 1.60
-====================
+Audio::PSID version 2.00
+========================
 
-This class is designed to handle PlaySID files (usually bearing a .sid
+This module is designed to handle PSID files (usually bearing a .sid
 extension), which are music player and data routines converted from the
 Commodore-64 computer with an additional informational header prepended. For
-further details about the exact file format, the description of all PSID
-fields and for about SID tunes in general, see the excellent SIDPLAY homepage
-at: http://www.geocities.com/SiliconValley/Lakes/5147/ (You can find
-literally thousands of SID tunes in the High Voltage SID Collection at:
-http://www.hvsc.c64.org)
+further details about the exact file format, see description of all PSID
+fields in the included PSID_v2NG.txt file. For information about SID tunes in
+general, see the excellent SIDPLAY homepage at:
 
-This class can handle both version 1 and version 2 PSID files. The class was
-designed primarily to make it easier to look at and change the PSID header
+http://www.geocities.com/SiliconValley/Lakes/5147/
+
+For PSID v2NG documentation:
+
+http://sidplay2.sourceforge.net
+
+You can find literally thousands of SID tunes in the High Voltage SID
+Collection at:
+
+http://www.hvsc.c64.org
+
+This module can handle both version 1 and version 2/2NG PSID files. (Version 2
+files are simply v2NG files where v2NG specific fields are set 0.) The module
+was designed primarily to make it easier to look at and change the PSID header
 fields, so many of the methods are geared towards that.
 
 INSTALLATION
@@ -25,8 +35,8 @@ To install this module type the following:
 
 COPYRIGHT AND LICENCE
 
-The module is provided as is. If you find bugs in the PSID.pm module,
-please report them to me immediately.
+The module is provided as is. If you find bugs in it, please report them to me
+immediately.
 
 This module is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.

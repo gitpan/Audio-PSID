@@ -1,5 +1,9 @@
 Revision history for Perl extension PSID.pm.
 
+2.00 - Wed Feb 20 2002
+        Added PSID v2NG support.
+        Major interface changes - see POD for details.
+
 1.60 - Sun Jan 6 2002
         First version released to CPAN.
 
